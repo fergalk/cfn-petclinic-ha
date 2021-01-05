@@ -502,7 +502,7 @@ Resources:
   PrivateSubnetNAclOut1000: # Ephemeral ports out to VPC
     Type: AWS::EC2::NetworkAclEntry
     Properties:
-      CidrBlock: !Ref VpcCidr
+      CidrBlock: 0.0.0.0/0
       Egress: true
       NetworkAclId: !Ref PrivateSubnetNAcl
       PortRange:
