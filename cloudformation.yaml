@@ -439,18 +439,6 @@ Resources:
       Protocol: 6
       RuleAction: allow
       RuleNumber: 200
-  PrivateSubnetNAclIn200: # Allow TCP 9966 in from VPC for REST requests to backends
-    Type: AWS::EC2::NetworkAclEntry
-    Properties:
-      CidrBlock: !Ref VpcCidr
-      Egress: false
-      NetworkAclId: !Ref PrivateSubnetNAcl
-      PortRange:
-        From: 9966
-        To: 9966
-      Protocol: 6
-      RuleAction: allow
-      RuleNumber: 200
   PrivateSubnetNAclIn300: # Allow SSH in from VPC
     Type: AWS::EC2::NetworkAclEntry
     Properties:
@@ -514,7 +502,7 @@ Resources:
   PrivateSubnetNAclOut1000: # Ephemeral ports out to VPC
     Type: AWS::EC2::NetworkAclEntry
     Properties:
-      CidrBlock: !Ref VpcCidr
+      CidrBlock: 0.0.0.0/0
       Egress: true
       NetworkAclId: !Ref PrivateSubnetNAcl
       PortRange:
@@ -674,15 +662,32 @@ Resources:
       AutoMinorVersionUpgrade: true
       DBClusterIdentifier: !Ref BackendDBCluster
       DBInstanceClass: !Ref BackendDBInstanceClass
-      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-primary'
+      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-1'
       Engine: aurora-postgresql
       PubliclyAccessible: false
-      PromotionTier: 0
+      PromotionTier: 1
       Tags:
         - Key: 'Name'
           Value: !Sub 'petclinic-${EnvName}-backend-db-1'
         - Key: 'Description'
           Value: !Sub 'Backend database 1 for ${EnvName} petclinic'
+
+  BackendDB2:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      DBClusterIdentifier: !Ref BackendDBCluster
+      DBInstanceClass: !Ref BackendDBInstanceClass
+      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-2'
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      PromotionTier: 2
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-backend-db-2'
+        - Key: 'Description'
+          Value: !Sub 'Backend database 2 for ${EnvName} petclinic'
 
   #--- EC2 launch templates & auto scaling groups
   # launch template for frontend petclinic servers
@@ -1174,3 +1179,15 @@ Resources:
         LoadBalancerArn: !Ref BackendLB
         Port: 9966
         Protocol: TCP
+
+Outputs:
+  FrontendURL:
+    Description: The URL to access the petclinic frontend
+    Value: !Sub 'http://${FrontendLB.DNSName}'
+  
+  DatabaseEndpoint:
+    Description: The DNS for the database cluster endpoint
+    Value: !GetAtt BackendDBCluster.Endpoint.Address
+  DatabasePort:
+    Description: The port for the database cluster endpoint
+    Value: !GetAtt BackendDBCluster.Endpoint.Port
