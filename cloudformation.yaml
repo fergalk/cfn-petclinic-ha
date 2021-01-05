@@ -662,7 +662,7 @@ Resources:
       AutoMinorVersionUpgrade: true
       DBClusterIdentifier: !Ref BackendDBCluster
       DBInstanceClass: !Ref BackendDBInstanceClass
-      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-0'
+      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-1'
       Engine: aurora-postgresql
       PubliclyAccessible: false
       PromotionTier: 1
