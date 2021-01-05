@@ -684,6 +684,23 @@ Resources:
         - Key: 'Description'
           Value: !Sub 'Backend database 1 for ${EnvName} petclinic'
 
+  BackendDB2:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      DBClusterIdentifier: !Ref BackendDBCluster
+      DBInstanceClass: !Ref BackendDBInstanceClass
+      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-primary'
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      PromotionTier: 1
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-backend-db-2'
+        - Key: 'Description'
+          Value: !Sub 'Backend database 2 for ${EnvName} petclinic'
+
   #--- EC2 launch templates & auto scaling groups
   # launch template for frontend petclinic servers
   LTPetClinicFE:
