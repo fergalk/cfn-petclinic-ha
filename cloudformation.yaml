@@ -1,0 +1,1176 @@
+Description: 'Deploys spring petclinic application on AWS.'
+
+Parameters:
+  EnvName:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9.]+$'
+    Description: 'Friendly name for petclinic installation, used for resource names and descriptions.'
+
+  DBPassword:
+    Type: String
+    Description: 'Password for petclinic database'
+    NoEcho: true
+
+  VpcCidr:
+    Type: String
+    Default: '10.0.0.0/20'
+    # Not a great regex as it will allow invalid IP addresses, but the alternative is excessively complicated. Bad IPs will cause an error down the line anyway.
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/20$'
+    Description: 'CIDR block of VPC for petclinic. Range must be /20.'
+
+  SSHKey:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: 'SSH key used to access EC2 instances'
+
+  FEServerInstanceType:
+    Type: String
+    Default: 't2.small'
+    Description: 'Instance type for petclinic frontend servers'
+    AllowedValues: ['t2.small', 't2.medium']
+  
+  FEServerAMI:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Description: 'AMI for petclinic frontend servers. Defaults to latest amazon linux AMI.'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+  BEServerInstanceType:
+    Type: String
+    Default: 't2.small'
+    Description: 'Instance type for petclinic backend servers'
+    AllowedValues: ['t2.small', 't2.medium']
+  
+  BEServerAMI:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Description: 'AMI for petclinic backend servers. Defaults to latest amazon linux AMI.'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+  BackendDBInstanceClass:
+    Type: String
+    Description: 'Instance class for backend petclinic database'
+    Default: db.r5.large
+    AllowedValues:
+      - db.r5.large
+      - db.r5.xlarge
+      - db.r5.2xlarge
+      - db.r5.4xlarge
+      - db.r5.8xlarge
+      - db.r5.12xlarge
+
+  BastionHostInstanceType:
+    Type: String
+    Default: 't2.nano'
+    Description: 'Instance type for petclinic backend servers'
+    AllowedValues: ['t2.nano', 't2.micro', 't2.small', 't2.medium']
+  
+  BastionHostAMI:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Description: 'AMI for petclinic backend servers. Defaults to latest amazon linux AMI.'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+
+Resources:
+  # --- VPC & networking configuration
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties: 
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: True
+      EnableDnsSupport: True
+      InstanceTenancy: default
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}'
+        - Key: 'Description'
+          Value: !Sub 'VPC for ${EnvName} petclinic.'
+  
+  # -- Private subnets for frontend & backend servers
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      # each subnet gets a /22 block
+      CidrBlock: !Select [ 0, !Cidr [ !Ref VpcCidr, 4, 10 ] ]
+      MapPublicIpOnLaunch: False
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-privsubnet1'
+        - Key: 'Description'
+          Value: !Sub 'Private subnet 1 for ${EnvName} petclinic.'
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      # each subnet gets a /22 block
+      CidrBlock: !Select [ 1, !Cidr [ !Ref VpcCidr, 4, 10 ] ]
+      MapPublicIpOnLaunch: False
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-privsubnet2'
+        - Key: 'Description'
+          Value: !Sub 'Private subnet 2 for ${EnvName} petclinic.'
+
+  # -- Public subnets for bastion hosts, NAT gateway & load balancers
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      # each subnet gets a /22 block
+      CidrBlock: !Select [ 2, !Cidr [ !Ref VpcCidr, 4, 10 ] ]
+      MapPublicIpOnLaunch: True
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-publicsubnet1'
+        - Key: 'Description'
+          Value: !Sub 'Public subnet 1 for ${EnvName} petclinic.'
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [ 1, !GetAZs ]
+      # each subnet gets a /22 block
+      CidrBlock: !Select [ 3, !Cidr [ !Ref VpcCidr, 4, 10 ] ]
+      MapPublicIpOnLaunch: True
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-publicsubnet2'
+        - Key: 'Description'
+          Value: !Sub 'Public subnet 2 for ${EnvName} petclinic.'
+
+  # Internet gateway for public subnets
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}'
+        - Key: 'Description'
+          Value: !Sub 'Internet gateway for ${EnvName} petclinic.'
+  IGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref IGW
+
+  # NAT gateways for downloading packages, files etc from private subnets. Create 2 so that we are resilient to AZ level outages - if one AZ dies, newly launched instances will need to download stuff to get up and running
+  # NAT gateway 1
+  NGW1EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-1'
+  NGW1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NGW1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+  # NAT gateway 2
+  NGW2EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-2'
+  NGW2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NGW2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+  
+  # route table & routes for both public subnets
+  PublicSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-public'
+        - Key: 'Description'
+          Value: !Sub 'Route table for ${EnvName} petclinic public subnets.'
+  RouteToIGW:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+      RouteTableId: !Ref PublicSubnetRouteTable
+  PublicRTA1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicSubnetRouteTable
+      SubnetId: !Ref PublicSubnet1
+  PublicRTA2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicSubnetRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  # separate route table for each private subnet so that we can use both nat gateways
+  # private subnet 1
+  PrivateSubnet1RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-private-1'
+        - Key: 'Description'
+          Value: !Sub 'Route table for ${EnvName} petclinic private subnet 1.'
+  RouteToNGW1:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NGW1
+      RouteTableId: !Ref PrivateSubnet1RouteTable
+  PrivateRTA1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateSubnet1RouteTable
+      SubnetId: !Ref PrivateSubnet1
+  # private subnet 2
+  PrivateSubnet2RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-private-2'
+        - Key: 'Description'
+          Value: !Sub 'Route table for ${EnvName} petclinic private subnet 2.'
+  RouteToNGW2:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NGW2
+      RouteTableId: !Ref PrivateSubnet2RouteTable
+  PrivateRTA2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateSubnet2RouteTable
+      SubnetId: !Ref PrivateSubnet2
+
+  # --- network acls
+  # public subnets
+  PublicSubnetNAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-public'
+        - Key: 'Description'
+          Value: !Sub 'Network ACL for ${EnvName} petclinic public subnets.'
+  PublicSubnet1NAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PublicSubnetNAcl
+      SubnetId: !Ref PublicSubnet1
+  PublicSubnet2NAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PublicSubnetNAcl
+      SubnetId: !Ref PublicSubnet2
+  PublicSubnetNAclIn100: # allow all HTTP traffic in for frontends & NAT gateway to internet
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 80
+        To: 80
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 100
+  PublicSubnetNAclIn101: # allow HTTPS traffic in from vpc for NAT gateway to internet
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Egress: false
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 101
+  PublicSubnetNAclIn200: # allow all TCP 9966 rest traffic in for backends
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 9966
+        To: 9966
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 200
+  PublicSubnetNAclIn300: # allow all SSH from anywhere
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 22
+        To: 22
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 300
+  PublicSubnetNAclIn1000: # ephemeral ports
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 1000
+  PublicSubnetNAclOut100: # HTTP traffic to 0.0.0.0/0 - for downloading files & forwarding HTTP traffic to frontends
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 80
+        To: 80
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 100
+  PublicSubnetNAclOut200: # HTTPS traffic to 0.0.0.0/0 - for downloading files
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 200
+  PublicSubnetNAclOut300: # tcp 9966 rest traffic to backends in VPC
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 9966
+        To: 9966
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 300
+  PublicSubnetNAclOut400: # allow all SSH to VPC
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 22
+        To: 22
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 400
+  PublicSubnetNAclOut1000: # ephemeral ports out to everywhere
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicSubnetNAcl
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 1000
+
+  # private subnets
+  PrivateSubnetNAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-private'
+        - Key: 'Description'
+          Value: !Sub 'Network ACL for ${EnvName} petclinic private subnets.'
+  PrivateSubnet1NAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      SubnetId: !Ref PrivateSubnet1
+  PrivateSubnet2NAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      SubnetId: !Ref PrivateSubnet2
+  PrivateSubnetNAclIn100: # Allow HTTP in from everywhere (frontend traffic)
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 80
+        To: 80
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 100
+  PrivateSubnetNAclIn200: # Allow TCP 9966 in from everywhere for REST requests to backends
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 9966
+        To: 9966
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 200
+  PrivateSubnetNAclIn200: # Allow TCP 9966 in from VPC for REST requests to backends
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Egress: false
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 9966
+        To: 9966
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 200
+  PrivateSubnetNAclIn300: # Allow SSH in from VPC
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Egress: false
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 22
+        To: 22
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 300
+  PrivateSubnetNAclIn1000: # Ephemeral ports
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 1000
+  PrivateSubnetNAclOut100: # HTTP out to everywhere for downloading files via NAT gateway
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 80
+        To: 80
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 100
+  PrivateSubnetNAclOut200: # HTTPS out to everywhere for downloading files via NAT gateway
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 443
+        To: 443
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 200
+  PrivateSubnetNAclOut300: # SSH out to VPC
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Egress: true
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 22
+        To: 22
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 300
+  PrivateSubnetNAclOut1000: # Ephemeral ports out to VPC
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Egress: true
+      NetworkAclId: !Ref PrivateSubnetNAcl
+      PortRange:
+        From: 1024
+        To: 65535
+      Protocol: 6
+      RuleAction: allow
+      RuleNumber: 1000
+
+  # --- Security groups
+  SGInternalSSH:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Allow SSH between servers in ${EnvName} petclinic.'
+      GroupName: !Sub 'petclinic-${EnvName}-internal-SSH'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - CidrIp: !GetAtt VPC.CidrBlock
+          Description: 'SSH from VPC'
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+      SecurityGroupEgress:
+        - CidrIp: !GetAtt VPC.CidrBlock
+          Description: 'SSH to VPC'
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+
+  SGBastionHost:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Allow SSH from anywhere for ${EnvName} petclinic bastion hosts.'
+      GroupName: !Sub 'petclinic-${EnvName}-bastion-host'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          Description: 'SSH from anywhere'
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+  
+  SGExternalHTTP:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${EnvName} petclinic servers to allow HTTP/HTTPS from anywhere.'
+      GroupName: !Sub 'petclinic-${EnvName}-external-http'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          Description: 'HTTPS from anywhere'
+          FromPort: 443
+          ToPort: 443
+          IpProtocol: tcp
+        - CidrIp: 0.0.0.0/0
+          Description: 'HTTP from anywhere'
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+
+  SGWebAccess:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Security group for ${EnvName} petclinic servers to allow HTTP/HTTPS to 0.0.0.0/0.'
+      GroupName: !Sub 'petclinic-${EnvName}-webaccess'
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          Description: 'HTTPS to anywhere'
+          FromPort: 443
+          ToPort: 443
+          IpProtocol: tcp
+        - CidrIp: 0.0.0.0/0
+          Description: 'HTTP to anywhere'
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+
+  SGBackendInbound:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Allow inbound traffic over TCP 9966 for petclinic backend (inbound REST requests).'
+      GroupName: !Sub 'petclinic-${EnvName}-Backend-REST'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - CidrIp: '0.0.0.0/0'
+          Description: 'Petclinic backend traffic from everywhere'
+          FromPort: 9966
+          ToPort: 9966
+          IpProtocol: tcp
+
+  SGBackendToDB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Allow traffic from petclinic backends to database cluster.'
+      GroupName: !Sub 'petclinic-${EnvName}-Backend-To-DB'
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - DestinationSecurityGroupId: !Ref SBDBCluster
+          Description: 'Petclinic DB traffic to database cluster'
+          FromPort: 5432
+          ToPort: 5432
+          IpProtocol: tcp
+
+  SBDBCluster:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Allow traffic over TCP 5432 from petclinic backend servers.'
+      GroupName: !Sub 'petclinic-${EnvName}-DBCluster'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref SGBackendInbound
+          Description: 'Database Traffic from petclinic backends'
+          FromPort: 5432
+          ToPort: 5432
+          IpProtocol: tcp
+
+  #--- Petclinic backend database
+  BackendDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub 'Subnet group for ${EnvName} petclinic backend cluster'
+      DBSubnetGroupName: !Sub '${EnvName}-petclinic'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  # TODO - database encryption?
+  BackendDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      AvailabilityZones:
+        - !Select [ 0, !GetAZs ]
+        - !Select [ 1, !GetAZs ]
+      BackupRetentionPeriod: 3
+      DatabaseName: petclinic
+      DBClusterIdentifier: !Sub 'petclinic-${EnvName}-BackendDBCluster'
+      DBSubnetGroupName: !Ref BackendDBSubnetGroup
+      DeletionProtection: false
+      EnableIAMDatabaseAuthentication: false
+      Engine: aurora-postgresql
+      MasterUsername: petclinic
+      MasterUserPassword: !Ref DBPassword
+      Port: 5432
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-backend-cluster'
+        - Key: 'Description'
+          Value: !Sub 'Backend database cluster for  ${EnvName} petclinic'
+      VpcSecurityGroupIds:
+        - !Ref SBDBCluster
+
+  BackendDB1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      DBClusterIdentifier: !Ref BackendDBCluster
+      DBInstanceClass: !Ref BackendDBInstanceClass
+      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-primary'
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      PromotionTier: 0
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-backend-db-1'
+        - Key: 'Description'
+          Value: !Sub 'Backend database 1 for ${EnvName} petclinic'
+
+  #--- EC2 launch templates & auto scaling groups
+  # launch template for frontend petclinic servers
+  LTPetClinicFE:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      # configure petclinic application
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - configure_repos_download_files
+            - download_packages_install_petclinic
+            - setup_run_nginx
+        configure_repos_download_files:
+          files:
+            # yum repo for epel - needed for nginx
+            /etc/yum.repos.d/epel.repo:
+              content: |
+                [epel]
+                name=Extra Packages for Enterprise Linux 7 - $basearch
+                #baseurl=http://download.fedoraproject.org/pub/epel/7/$basearch
+                metalink=https://mirrors.fedoraproject.org/metalink?repo=epel-7&arch=$basearch
+                failovermethod=priority
+                enabled=1
+                gpgcheck=0
+                [epel-debuginfo]
+                name=Extra Packages for Enterprise Linux 7 - $basearch - Debug
+                #baseurl=http://download.fedoraproject.org/pub/epel/7/$basearch/debug
+                metalink=https://mirrors.fedoraproject.org/metalink?repo=epel-debug-7&arch=$basearch
+                failovermethod=priority
+                enabled=0
+                gpgcheck=0
+                [epel-source]
+                name=Extra Packages for Enterprise Linux 7 - $basearch - Source
+                #baseurl=http://download.fedoraproject.org/pub/epel/7/SRPMS
+                metalink=https://mirrors.fedoraproject.org/metalink?repo=epel-source-7&arch=$basearch
+                failovermethod=priority
+                enabled=0
+                gpgcheck=0
+              mode: '000644'
+              owner: root
+              group: root
+            # yum repo for nodejs
+            /etc/yum.repos.d/nodesource.repo:
+              content: |
+                [nodesource]
+                name=Node.js Packages for Enterprise Linux 8 - $basearch
+                baseurl=https://rpm.nodesource.com/pub_12.x/el/8/$basearch
+                failovermethod=priority
+                enabled=1
+                gpgcheck=0
+                [nodesource-source]
+                name=Node.js for Enterprise Linux 8 - $basearch - Source
+                baseurl=https://rpm.nodesource.com/pub_12.x/el/8/SRPMS
+                failovermethod=priority
+                enabled=0
+                gpgcheck=0
+              mode: '000644'
+              owner: root
+              group: root
+            # source for petclinic frontend
+            /tmp/petclinic-frontend.tgz:
+              source: https://github.com/spring-petclinic/spring-petclinic-angular/tarball/master
+              mode: '000644'
+              owner: root
+              group: root
+            # create apps dir
+            /apps/petclinic-frontend/.empty:
+              content: 'empty placeholder file'
+              mode: '000644'
+              owner: root
+              group: root
+          commands:
+            # extract petclinic source to apps dir
+            1_extract_source:
+              command: 'tar -xvzf /tmp/petclinic-frontend.tgz --strip-components=1 -C /apps/petclinic-frontend/'
+        download_packages_install_petclinic:
+          packages:
+            yum:
+              nginx.x86_64: []
+              nodejs.x86_64: []
+          files:
+            # petclinic config file. point it at our backend LB
+            /apps/petclinic-frontend/src/environments/environment.prod.ts:
+              content: !Sub |
+                export const environment = {
+                  production: true,
+                  REST_API_URL: 'http://${BackendLB.DNSName}:9966/petclinic/api/'
+                };
+          commands:
+            # install angular cli to build petclinic frontend
+            1_install_angular_cli:
+              command: 'npm install -g @angular/cli'
+              env:
+                NG_CLI_ANALYTICS: ci
+                PATH: /usr/local/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin
+            # install angular devkit to build petclinic frontend
+            2_install_angular_devkit:
+              command: 'npm install -g @angular-devkit/build-angular'
+              env:
+                NG_CLI_ANALYTICS: ci
+                PATH: /usr/local/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin
+              cwd: /apps/petclinic-frontend
+            # 3 & 4 - install petclinic requirements
+            3_get_angular_updates:
+              command: 'npm update'
+              env:
+                NG_CLI_ANALYTICS: ci
+                PATH: /usr/local/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin
+              cwd: /apps/petclinic-frontend
+            4_install_angular_updates:
+              command: 'npm install'
+              env:
+                NG_CLI_ANALYTICS: ci
+                PATH: /usr/local/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin
+              cwd: /apps/petclinic-frontend
+            # build petclinic application
+            5_build_petclinic:
+              command: 'ng build --prod --base-href=/petclinic/ --deploy-url=/petclinic/'
+              env:
+                NG_CLI_ANALYTICS: ci
+                PATH: /usr/local/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin
+              cwd: /apps/petclinic-frontend
+            # set /apps/petclinic owner to nginx user
+            6_set_apps_files_owner:
+              command: 'chown -R nginx. /apps/petclinic-frontend'
+        setup_run_nginx:
+          files:
+            /etc/nginx/nginx.conf:
+              content: |
+                user nginx;
+                worker_processes auto;
+                error_log /var/log/nginx/error.log;
+                pid /run/nginx.pid;
+
+                # Load dynamic modules. See /usr/share/doc/nginx/README.dynamic.
+                include /usr/share/nginx/modules/*.conf;
+
+                events {
+                    worker_connections 1024;
+                }
+
+                http {
+                    log_format  main  '$remote_addr - $remote_user [$time_local] $request '
+                                      '$status $body_bytes_sent $http_referer '
+                                      '$http_user_agent $http_x_forwarded_for';
+
+                    access_log  /var/log/nginx/access.log  main;
+
+                    sendfile            on;
+                    tcp_nopush          on;
+                    tcp_nodelay         on;
+                    keepalive_timeout   65;
+                    types_hash_max_size 2048;
+
+                    include             /etc/nginx/mime.types;
+                    default_type        application/octet-stream;
+
+                    server {
+                        listen       80 default_server;
+                        root         /usr/share/nginx/html;
+                        index index.html;
+
+                        rewrite ^/$ /petclinic permanent;
+
+                        location /petclinic {
+                            alias /apps/petclinic-frontend/dist;
+                            try_files $uri$args $uri$args/ /petclinic/index.html;
+                        }
+                    }
+                }
+              mode: '000644'
+              owner: root
+              group: root
+          commands:
+            1_enable_nginx:
+              command: 'systemctl enable nginx.service'
+            2_start_nginx:
+              command: 'systemctl start nginx.service'
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref FEServerAMI
+        InstanceType: !Ref FEServerInstanceType
+        KeyName: !Ref SSHKey
+        SecurityGroupIds:
+          - !Ref SGInternalSSH
+          - !Ref SGExternalHTTP
+          - !Ref SGWebAccess
+        UserData: !Base64
+          Fn::Sub: |
+            #!/bin/bash
+            /opt/aws/bin/cfn-init -s ${AWS::StackName} -r LTPetClinicFE --region ${AWS::Region} -v
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: 'Name'
+                Value: !Sub 'petclinic-${EnvName}-frontend'
+              - Key: 'Description'
+                Value: !Sub 'Frontend server for ${EnvName} petclinic.'
+      LaunchTemplateName: !Sub 'petclinic-${EnvName}-frontend'
+      
+  # Launch template for petclinic backend servers
+  LTPetClinicBE:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref BEServerAMI
+        InstanceType: !Ref BEServerInstanceType
+        KeyName: !Ref SSHKey
+        SecurityGroupIds:
+          - !Ref SGInternalSSH
+          - !Ref SGBackendInbound
+          - !Ref SGBackendToDB
+          - !Ref SGWebAccess
+        UserData: !Base64
+          Fn::Sub: |
+            #!/bin/bash
+            /opt/aws/bin/cfn-init -s ${AWS::StackName} -r LTPetClinicBE --region ${AWS::Region} -v
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: 'Name'
+                Value: !Sub 'petclinic-${EnvName}-backend'
+              - Key: 'Description'
+                Value: !Sub 'Backend server for ${EnvName} petclinic.'
+      LaunchTemplateName: !Sub 'petclinic-${EnvName}-backend'
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default: 
+            - setup_petclinic_environment
+            - extract_petclinic_files
+            - configure_petclinic
+        # install required packages, download files & create user for petclinic
+        setup_petclinic_environment:
+          packages:
+            yum:
+              postgresql.x86_64: []
+              java-1.8.0-openjdk-devel.x86_64: []
+          files:
+            /tmp/petclinic-rest-source.tgz:
+              source: https://github.com/spring-petclinic/spring-petclinic-rest/tarball/master
+              owner: petclinic
+              group: petclinic
+              mode: '000644'
+            /apps/petclinic-backend/.empty: # create petclinic apps dir
+              content: 'empty file'
+              owner: petclinic
+              group: petclinic
+              mode: '000400'
+            /home/petclinic/.empty: # create home dir
+              content: 'empty file'
+              owner: petclinic
+              group: petclinic
+              mode: '000444'
+          users:
+            petclinic:
+              groups: [games]
+              homedir: /home/petclinic
+          commands:
+            1_fix_home_perms:
+              command: 'chown -R petclinic:games /home/petclinic' # /home/petclinic owner is set to root - change to petclinic:games
+        # extract petclinic files, setup systemd unit
+        extract_petclinic_files:
+          files:
+            /etc/systemd/system/petclinic-backend.service:
+              content: |
+                [Unit]
+                Description=Backend service for petclinic install
+                [Service]
+                ExecStart=/apps/petclinic-backend/mvnw spring-boot:run
+                Type=simple
+                User=petclinic
+                WorkingDirectory=/apps/petclinic-backend
+                Restart=always
+                [Install]
+                WantedBy=multi-user.target
+              owner: root
+              group: root
+              mode: '000644'
+          commands:
+            1_extract:
+              command: 'tar -xvzf /tmp/petclinic-rest-source.tgz --strip-components=1 -C /apps/petclinic-backend'
+            2_chown:
+              command: 'chown -R petclinic. /apps'
+            3_remove_files: # remove extraoneous properties files
+              command: 'rm -f /apps/petclinic-backend/src/main/resources/application-hsqldb.properties /apps/petclinic-backend/src/main/resources/application-mysql.properties /apps/petclinic-backend/src/main/resources/application-postgresql.properties'
+        # configure & start petclinic
+        configure_petclinic:
+          files:
+            /apps/petclinic-backend/src/main/resources/application.properties:
+              content: !Sub |
+                # set profile
+                spring.profiles.active=postgresql,spring-data-jpa
+                #----- Setup database connection
+                spring.datasource.url=jdbc:postgresql://${BackendDBCluster.Endpoint.Address}:${BackendDBCluster.Endpoint.Port}/petclinic
+                spring.datasource.username=petclinic
+                spring.datasource.password=${DBPassword}
+                spring.datasource.driver-class-name=org.postgresql.Driver
+                # ----- setup server settings
+                server.port=9966
+                server.servlet.context-path=/petclinic/
+                spring.messages.basename=messages/messages
+                logging.level.org.springframework=INFO
+                # ------ Enable auth?
+                petclinic.security.enable=false
+          commands:
+            1_db_schema: # setup db schema. SQL is idempotent so no problem running each time
+              command: !Sub 'psql -h ${BackendDBCluster.Endpoint.Address} -p ${BackendDBCluster.Endpoint.Port} -U petclinic petclinic < /apps/petclinic-backend/src/main/resources/db/postgresql/initDB.sql'
+              env:
+                PGPASSWORD: !Ref DBPassword
+            2_daemon_reload:
+              command: 'systemctl daemon-reload'
+            3_enable:
+              command: 'systemctl enable petclinic-backend.service'
+            4_start:
+              command: 'systemctl start petclinic-backend.service'
+
+
+  # launch template for bastion hosts
+  LTPetClinicBastionHost:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref BastionHostAMI
+        InstanceType: !Ref BastionHostInstanceType
+        KeyName: !Ref SSHKey
+        SecurityGroupIds:
+          - !Ref SGInternalSSH
+          - !Ref SGBastionHost
+          - !Ref SGWebAccess
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: 'Name'
+                Value: !Sub 'petclinic-${EnvName}-bastion-host'
+              - Key: 'Description'
+                Value: !Sub 'Bastion host for ${EnvName} petclinic.'
+      LaunchTemplateName: !Sub 'petclinic-${EnvName}-bastion-host'
+
+  # autoscaling group for frontend petclinic servers
+  ASGPetclinicFE:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: 2
+      Cooldown: 60
+      HealthCheckType: EC2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LTPetClinicFE
+        Version: !GetAtt LTPetClinicFE.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 10
+      TargetGroupARNs:
+        - !Ref FrontendTG80
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      TerminationPolicies:
+        - OldestLaunchConfiguration
+        - OldestInstance
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-frontend'
+          PropagateAtLaunch: false
+
+  # autoscaling group for backend petclinic servers
+  ASGPetclinicBE:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - BackendDB1 # we need the DB in place so that we can build our schema
+    Properties:
+      DesiredCapacity: 2
+      Cooldown: 60
+      HealthCheckType: EC2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LTPetClinicBE
+        Version: !GetAtt LTPetClinicBE.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 10
+      TargetGroupARNs:
+        - !Ref BackendTG9966
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      TerminationPolicies:
+        - OldestLaunchConfiguration
+        - OldestInstance
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-backend'
+          PropagateAtLaunch: false
+
+  # autoscaling group for petclinic bastion hosts
+  ASGPetclinicBastionHost:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: 1
+      Cooldown: 60
+      HealthCheckType: EC2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LTPetClinicBastionHost
+        Version: !GetAtt LTPetClinicBastionHost.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 10
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      TerminationPolicies:
+        - OldestLaunchConfiguration
+        - OldestInstance
+      Tags:
+        - Key: 'Name'
+          Value: !Sub 'petclinic-${EnvName}-bastion-host'
+          PropagateAtLaunch: false
+
+  # --- Load Balancers
+  # -- Frontend load balancing
+  FrontendLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub 'petclinic-${EnvName}-FE'
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Tags:
+        - Key: 'Description'
+          Value: !Sub 'Frontend network LB for ${EnvName} petclinic.'
+      Type: network
+  FrontendTG80:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckProtocol: TCP
+      Name: !Sub 'pc-${EnvName}-FETG80'
+      Port: 80
+      Protocol: TCP
+      Tags:
+        - Key: 'Description'
+          Value: !Sub 'Frontend target group on TCP:80 for ${EnvName} petclinic.'
+      TargetType: instance
+      VpcId: !Ref VPC
+  FrontendListener80:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+        DefaultActions:
+          - Type: forward 
+            ForwardConfig:
+              TargetGroups:
+                - TargetGroupArn: !Ref FrontendTG80
+        LoadBalancerArn: !Ref FrontendLB
+        Port: 80
+        Protocol: TCP
+
+  #-- Backend load balancing - internet facing as REST requests are made from client side
+  BackendLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub 'petclinic-${EnvName}-BE'
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Tags:
+        - Key: 'Description'
+          Value: !Sub 'Backend network LB for ${EnvName} petclinic.'
+      Type: network
+  BackendTG9966:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckProtocol: TCP
+      Name: !Sub 'pc-${EnvName}-BETG9966'
+      Port: 9966
+      Protocol: TCP
+      Tags:
+        - Key: 'Description'
+          Value: !Sub 'Backend target group on TCP:443 for ${EnvName} petclinic.'
+      TargetType: instance
+      VpcId: !Ref VPC
+  BackendListener9966:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+        DefaultActions:
+          - Type: forward 
+            ForwardConfig:
+              TargetGroups:
+                - TargetGroupArn: !Ref BackendTG9966
+        LoadBalancerArn: !Ref BackendLB
+        Port: 9966
+        Protocol: TCP
