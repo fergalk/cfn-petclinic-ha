@@ -1184,3 +1184,10 @@ Outputs:
   FrontendURL:
     Description: The URL to access the petclinic frontend
     Value: !Sub 'http://${FrontendLB.DNSName}'
+  
+  DatabaseEndpoint:
+    Description: The DNS for the database cluster endpoint
+    Value: !GetAtt BackendDBCluster.Endpoint.Address
+  DatabasePort:
+    Description: The port for the database cluster endpoint
+    Value: !GetAtt BackendDBCluster.Endpoint.Port
