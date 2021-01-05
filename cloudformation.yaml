@@ -1179,3 +1179,8 @@ Resources:
         LoadBalancerArn: !Ref BackendLB
         Port: 9966
         Protocol: TCP
+
+Outputs:
+  FrontendURL:
+    Description: The URL to access the petclinic frontend
+    Value: !Sub 'http://${FrontendLB.DNSName}'
