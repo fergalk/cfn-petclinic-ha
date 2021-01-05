@@ -662,10 +662,10 @@ Resources:
       AutoMinorVersionUpgrade: true
       DBClusterIdentifier: !Ref BackendDBCluster
       DBInstanceClass: !Ref BackendDBInstanceClass
-      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-writer'
+      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-0'
       Engine: aurora-postgresql
       PubliclyAccessible: false
-      PromotionTier: 0
+      PromotionTier: 1
       Tags:
         - Key: 'Name'
           Value: !Sub 'petclinic-${EnvName}-backend-db-1'
@@ -679,10 +679,10 @@ Resources:
       AutoMinorVersionUpgrade: true
       DBClusterIdentifier: !Ref BackendDBCluster
       DBInstanceClass: !Ref BackendDBInstanceClass
-      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-reader'
+      DBInstanceIdentifier: !Sub 'petclinic-${EnvName}-2'
       Engine: aurora-postgresql
       PubliclyAccessible: false
-      PromotionTier: 1
+      PromotionTier: 2
       Tags:
         - Key: 'Name'
           Value: !Sub 'petclinic-${EnvName}-backend-db-2'
