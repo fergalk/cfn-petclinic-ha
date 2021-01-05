@@ -8,13 +8,13 @@ Deploys HA spring-petclinic application on AWS CloudFormation.
 
 ## Access
 ### Web
-The URL for the petclinic web interface is in the outputs section, named `FrontendURL`.
+The URL for the petclinic web interface is in the outputs section, named **FrontendURL**.
 
 ### SSH
 To log onto any of the servers, first SSH onto a bastion host using the SSH key you selected when you built the stack. From there, you can SSH onto any of the servers in the private subnets using the same SSH key (note - you will need to add the private key to the bastion host manually).
 
 ### Database
-To access the database, log onto any backend server using the procedure described in *SSH access*, and use the psql command to connect to the `petclinic` database with the `petclinic` user and the password you entered in the parameters section. The database DNS & port are in the outputs section under DatabaseEndpoint & DatabasePort.
+To access the database, log onto any backend server using the procedure described in *SSH access*, and use the psql command to connect to the **petclinic** database with the **petclinic** user and the password you entered in the parameters section. The database DNS & port are in the outputs section under **DatabaseEndpoint** & **DatabasePort**.
 
 Example login command (enter password when prompted):
 
