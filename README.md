@@ -26,9 +26,9 @@ Example login command (enter password when prompted):
 
 ## Server config
 ### Backend
-Service petclinic-backend.service runs the petclinic backend server. Content is stored in /apps/petclinic-backend. The server listens on TCP 9966.
+Service petclinic-backend.service runs the petclinic backend server. Content is stored in /apps/petclinic-backend.
 ### Frontend
-The frontend web content is served by Nginx. The content is stored in /apps/petclinic-frontend. The server listens on TCP 80.
+The frontend web content is served by Nginx. The content is stored in /apps/petclinic-frontend. 
 
 ## Listening ports
 - Backend API - TCP 9966
